@@ -1,0 +1,12 @@
+*.pdf
+*.png
+*.jpg
+*.jpeg
+.DS_Store
+node_modules/
+.env
+__pycache__/
+*.pyc
+.venv/
+venv/
+rfq_agent.db
