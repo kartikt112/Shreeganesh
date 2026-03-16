@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Upload, FileText, Settings, ArrowLeft } from 'lucide-react';
+import { Upload, FileText, FileSpreadsheet, Settings, ArrowLeft } from 'lucide-react';
 import api from '../api/client';
 
 export default function NewRFQ() {
@@ -14,6 +14,7 @@ export default function NewRFQ() {
         quantity: ''
     });
     const [drawing, setDrawing] = useState(null);
+    const [template, setTemplate] = useState(null);
     const [interactive, setInteractive] = useState(false);
 
     const handleInputChange = (e) => {
@@ -23,6 +24,12 @@ export default function NewRFQ() {
     const handleFileChange = (e) => {
         if (e.target.files && e.target.files.length > 0) {
             setDrawing(e.target.files[0]);
+        }
+    };
+
+    const handleTemplateChange = (e) => {
+        if (e.target.files && e.target.files.length > 0) {
+            setTemplate(e.target.files[0]);
         }
     };
 
@@ -40,6 +47,7 @@ export default function NewRFQ() {
                 if (formData[key]) data.append(key, formData[key]);
             });
             data.append('drawing', drawing);
+            if (template) data.append('template', template);
 
             const res = await api.post('/rfq', data, {
                 headers: { 'Content-Type': 'multipart/form-data' }
@@ -159,6 +167,38 @@ export default function NewRFQ() {
                                 />
                             </label>
                             <p className="text-xs text-muted mt-4">Takes a master PDF or flat image. Max 10MB.</p>
+                        </div>
+                    </div>
+
+                    <div className="form-group">
+                        <label className="form-label">Feasibility Template (Optional)</label>
+                        <div
+                            style={{
+                                border: '2px dashed var(--border-color)',
+                                padding: '28px',
+                                textAlign: 'center',
+                                borderRadius: 'var(--radius-md)',
+                                backgroundColor: 'rgba(26, 29, 36, 0.4)'
+                            }}
+                        >
+                            <FileSpreadsheet size={40} className="text-secondary mb-4 mx-auto" />
+                            <div className="mb-4">
+                                {template ? (
+                                    <span className="text-accent-blue font-medium">{template.name}</span>
+                                ) : (
+                                    <span className="text-muted">No template selected</span>
+                                )}
+                            </div>
+                            <label className="btn btn-outline" style={{ display: 'inline-flex' }}>
+                                Browse Excel Files
+                                <input
+                                    type="file"
+                                    accept=".xlsx,.xls"
+                                    onChange={handleTemplateChange}
+                                    style={{ display: 'none' }}
+                                />
+                            </label>
+                            <p className="text-xs text-muted mt-4">Upload your company's Excel feasibility template. If skipped, the default template is used.</p>
                         </div>
                     </div>
 
