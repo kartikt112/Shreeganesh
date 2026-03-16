@@ -4,7 +4,8 @@ Triggers an immediate redraw of the ballooned image.
 """
 import os
 import json
-from fastapi import APIRouter, Depends, HTTPException
+import shutil
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional, List
@@ -30,6 +31,16 @@ class ManualFeatureUpdate(BaseModel):
     description: Optional[str] = None
     specification: Optional[str] = None
     feature_type: Optional[str] = None
+
+class BulkFeature(BaseModel):
+    balloon_no: int
+    specification: Optional[str] = ""
+    description: Optional[str] = ""
+    feature_type: Optional[str] = "OTHER"
+    box_2d: Optional[List] = None
+
+class BulkSaveRequest(BaseModel):
+    features: List[BulkFeature]
 
 def redraw_balloons(rfq: RFQ, db: Session):
     # Get all features currently in DB for this RFQ (preserve their custom numbers!)
@@ -141,5 +152,42 @@ def update_feature(rfq_id: int, feat_id: int, update_data: ManualFeatureUpdate, 
     # Redraw standard balloon image if number changed
     if update_data.balloon_no is not None or update_data.specification is not None:
         redraw_balloons(rfq, db)
-        
+
     return feat
+
+
+@router.put("/bulk")
+def bulk_save_features(rfq_id: int, payload: BulkSaveRequest, db: Session = Depends(get_db)):
+    """
+    Replace all features for an RFQ with the editor's current state.
+    Called when the user exits the balloon editor to sync changes back.
+    """
+    rfq = db.query(RFQ).filter(RFQ.id == rfq_id).first()
+    if not rfq:
+        raise HTTPException(status_code=404, detail="RFQ not found")
+
+    # Delete existing features
+    db.query(DrawingFeature).filter(DrawingFeature.rfq_id == rfq_id).delete()
+
+    # Insert new features from editor
+    for f in payload.features:
+        box_2d_str = json.dumps(f.box_2d) if f.box_2d else None
+        db.add(DrawingFeature(
+            rfq_id=rfq_id,
+            balloon_no=f.balloon_no,
+            specification=f.specification or "",
+            description=f.description or "",
+            feature_type=f.feature_type or "OTHER",
+            box_2d=box_2d_str,
+            criticality="normal",
+            proposed_machine="PENDING REVIEW",
+            inhouse_outsource="Inhouse",
+            feasible="Yes",
+        ))
+
+    db.commit()
+
+    # Redraw ballooned image
+    redraw_balloons(rfq, db)
+
+    return {"ok": True, "message": f"Saved {len(payload.features)} features from editor"}

@@ -8,10 +8,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(override=True)
 
 from database import init_db
-from routers import rfq, analyze, review, report, features
+from routers import rfq, analyze, review, report, features, admin
 from seed_data import seed
 
 app = FastAPI(title="RFQ Feasibility Agent", version="1.0.0")
@@ -19,7 +19,7 @@ app = FastAPI(title="RFQ Feasibility Agent", version="1.0.0")
 # CORS – allow React dev server
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000"],
+    allow_origins=["http://localhost:5173", "http://localhost:5174", "http://localhost:3000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -36,6 +36,7 @@ app.include_router(analyze.router)
 app.include_router(review.router)
 app.include_router(report.router)
 app.include_router(features.router)
+app.include_router(admin.router)
 
 @app.on_event("startup")
 def startup():

@@ -7,6 +7,7 @@ Stage 2 (FEASIBILITY_REVIEW): approve → COSTING
 """
 import os
 import sys
+import json
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(__file__)), "ai"))
 
@@ -24,7 +25,17 @@ router = APIRouter(prefix="/api/rfq", tags=["review"])
 def _get_api_key():
     from dotenv import load_dotenv
     load_dotenv()
-    return os.getenv("GEMINI_API_KEY", "")
+    return os.getenv("ANTHROPIC_API_KEY", "")
+
+
+def _load_manufacturing_metadata(rfq_id: int) -> dict:
+    """Load saved manufacturing_metadata JSON for an RFQ (if available)."""
+    upload_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "uploads")
+    metadata_path = os.path.join(upload_dir, "drawings", f"{rfq_id}_metadata.json")
+    if os.path.exists(metadata_path):
+        with open(metadata_path, "r") as f:
+            return json.load(f)
+    return {}
 
 
 @router.post("/{rfq_id}/review", response_model=ReviewOut)
@@ -86,7 +97,7 @@ async def submit_review(
 
 
 async def _rerun_balloon(rfq_id: int, notes: str = ""):
-    """Re-run the Nano Banana balloon step for a revision."""
+    """Re-run the balloon step for a revision."""
     from database import SessionLocal
     db = SessionLocal()
     try:
@@ -99,10 +110,20 @@ async def _rerun_balloon(rfq_id: int, notes: str = ""):
         png_path = os.path.join(upload_dir, "drawings", f"{rfq_id}_drawing.png")
         ballooned_path = os.path.join(upload_dir, "ballooned", f"{rfq_id}_ballooned.png")
 
-        features = [
-            {"balloon_no": f.balloon_no, "description": f.description, "specification": f.specification}
-            for f in db.query(DrawingFeature).filter(DrawingFeature.rfq_id == rfq_id).all()
-        ]
+        features = []
+        for f in db.query(DrawingFeature).filter(DrawingFeature.rfq_id == rfq_id).all():
+            feat = {
+                "balloon_no": f.balloon_no,
+                "description": f.description,
+                "specification": f.specification,
+                "feature_type": f.feature_type,
+            }
+            if f.box_2d:
+                try:
+                    feat["box_2d"] = json.loads(f.box_2d)
+                except json.JSONDecodeError:
+                    pass
+            features.append(feat)
 
         from balloon_generator import generate_ballooned_image
         generate_ballooned_image(png_path, features, ballooned_path, api_key)
@@ -117,7 +138,7 @@ async def _rerun_balloon(rfq_id: int, notes: str = ""):
 
 
 async def _rerun_feasibility(rfq_id: int, notes: str = ""):
-    """Re-run feasibility engine with reviewer notes."""
+    """Re-run feasibility engine with reviewer notes and manufacturing_metadata."""
     from database import SessionLocal
     db = SessionLocal()
     try:
@@ -125,22 +146,38 @@ async def _rerun_feasibility(rfq_id: int, notes: str = ""):
         if not rfq:
             return
 
+        # Load manufacturing_metadata from disk (saved during initial extraction)
+        manufacturing_metadata = _load_manufacturing_metadata(rfq_id)
+
         features = db.query(DrawingFeature).filter(DrawingFeature.rfq_id == rfq_id).all()
-        raw = [
-            {
-                "balloon_no": f.balloon_no, "description": f.description,
-                "specification": f.specification, "feature_type": f.feature_type,
-                "criticality_hint": "normal"
+        raw = []
+        for f in features:
+            feat = {
+                "balloon_no": f.balloon_no,
+                "description": f.description,
+                "specification": f.specification,
+                "feature_type": f.feature_type,
+                "criticality_hint": "normal",
             }
-            for f in features
-        ]
+            if f.box_2d:
+                try:
+                    feat["box_2d"] = json.loads(f.box_2d)
+                except json.JSONDecodeError:
+                    pass
+            raw.append(feat)
 
         from feasibility_engine import process_features
-        processed = process_features(raw, db)
+        processed = process_features(raw, db, manufacturing_metadata=manufacturing_metadata)
 
         db.query(DrawingFeature).filter(DrawingFeature.rfq_id == rfq_id).delete()
         for feat in processed:
-            db.add(DrawingFeature(rfq_id=rfq_id, **feat))
+            if "box_2d" in feat and isinstance(feat["box_2d"], list):
+                feat["box_2d"] = json.dumps(feat["box_2d"])
+            elif "box_2d" not in feat:
+                feat["box_2d"] = None
+            keys_to_remove = ["criticality_hint"]
+            cleaned = {k: v for k, v in feat.items() if k not in keys_to_remove}
+            db.add(DrawingFeature(rfq_id=rfq_id, **cleaned))
 
         rfq.status = RFQStatus.FEASIBILITY_REVIEW
         db.commit()

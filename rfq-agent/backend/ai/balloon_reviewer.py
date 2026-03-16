@@ -20,10 +20,19 @@ def review_balloons(
     try:
         from anthropic import Anthropic
         
+        from PIL import Image as PILImage
+
         with open(ballooned_image_path, "rb") as f:
             image_bytes = f.read()
-            
+
         base64_image = base64.b64encode(image_bytes).decode("utf-8")
+
+        # Detect actual format from file header
+        pil_img = PILImage.open(ballooned_image_path)
+        fmt = pil_img.format or "PNG"
+        pil_img.close()
+        fmt_map = {"PNG": "image/png", "JPEG": "image/jpeg", "WEBP": "image/webp"}
+        detected_media_type = fmt_map.get(fmt, "image/png")
         
         # Prepare the current JSON state so Claude knows what to correct
         current_state = json.dumps([{
@@ -75,7 +84,7 @@ Return the entirely CORRECTED JSON array (no markdown):
 
         client = Anthropic(api_key=api_key)
         message = client.messages.create(
-            model="claude-sonnet-4-5-20250929",
+            model="claude-sonnet-4-6",
             max_tokens=4090,
             system="You are the world's best Mechanical Engineer and Lead Quality Inspector.",
             messages=[
@@ -86,7 +95,7 @@ Return the entirely CORRECTED JSON array (no markdown):
                             "type": "image",
                             "source": {
                                 "type": "base64",
-                                "media_type": "image/png",
+                                "media_type": detected_media_type,
                                 "data": base64_image
                             }
                         },

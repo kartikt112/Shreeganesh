@@ -100,3 +100,35 @@ class OutsourcedProcess(Base):
     __tablename__ = "outsourced_processes"
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, nullable=False)
+
+
+class PipelineRunStatus(str, enum.Enum):
+    SUCCESS = "SUCCESS"
+    FAILED = "FAILED"
+
+
+class PipelineRun(Base):
+    """
+    Stores one execution of the RFQ AI pipeline for dashboard/metrics.
+    """
+
+    __tablename__ = "pipeline_runs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    rfq_id = Column(Integer, ForeignKey("rfqs.id"), nullable=False, index=True)
+
+    started_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    completed_at = Column(DateTime, nullable=True)
+
+    status = Column(String, default=PipelineRunStatus.SUCCESS.value)
+    engine = Column(String, default="gemini")  # e.g. gemini / claude
+
+    total_ms = Column(Integer, nullable=True)
+    failure_stage = Column(String, nullable=True)
+    failure_message = Column(Text, nullable=True)
+
+    # JSON text with per-stage timings / metadata for visualization
+    stages_json = Column(Text, nullable=True)
+
+    rfq = relationship("RFQ")
+

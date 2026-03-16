@@ -14,6 +14,7 @@ export default function NewRFQ() {
         quantity: ''
     });
     const [drawing, setDrawing] = useState(null);
+    const [interactive, setInteractive] = useState(false);
 
     const handleInputChange = (e) => {
         setFormData({ ...formData, [e.target.name]: e.target.value });
@@ -47,10 +48,13 @@ export default function NewRFQ() {
             const rfqId = res.data.id;
 
             // Trigger AI Analysis Pipeline immediately after creation
-            await api.post(`/rfq/${rfqId}/analyze`);
+            const analyzeUrl = interactive
+                ? `/rfq/${rfqId}/analyze?interactive=true`
+                : `/rfq/${rfqId}/analyze`;
+            await api.post(analyzeUrl);
 
-            // Navigate to dashboard
-            navigate('/');
+            // Navigate to RFQ detail page to track progress
+            navigate(`/rfq/${rfqId}`);
 
         } catch (err) {
             console.error("Failed to create RFQ", err);
@@ -156,6 +160,19 @@ export default function NewRFQ() {
                             </label>
                             <p className="text-xs text-muted mt-4">Takes a master PDF or flat image. Max 10MB.</p>
                         </div>
+                    </div>
+
+                    <div className="form-group" style={{ marginTop: '16px' }}>
+                        <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer' }}>
+                            <input
+                                type="checkbox"
+                                checked={interactive}
+                                onChange={(e) => setInteractive(e.target.checked)}
+                                style={{ width: '18px', height: '18px', accentColor: 'var(--accent-blue)' }}
+                            />
+                            <span className="form-label" style={{ margin: 0 }}>Interactive Mode</span>
+                            <span className="text-xs text-muted">(Pause at balloon editor for manual corrections before feasibility)</span>
+                        </label>
                     </div>
 
                     <div className="flex justify-end gap-4 mt-8 pt-6 border-t" style={{ borderColor: 'var(--border-color)' }}>

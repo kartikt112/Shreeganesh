@@ -4,7 +4,7 @@ Implements the 5-Stage Deep Vision Pipeline:
 1. PyMuPDF Vector Text Span Extraction
 2. OpenCV / Geometric Proximity Clustering for Tolerances
 3. Layout Parser zone filtering (heuristics)
-4. Gemini 2.5 Flash for Dimension Classification & Reasoning
+4. Claude Sonnet 4.5 for Dimension Classification & Reasoning
 Falls back to mock data if no API key is set.
 """
 import os
@@ -40,9 +40,9 @@ def pdf_to_png(pdf_path: str, output_path: str, dpi: int = 200) -> str:
 
 def parse_drawing(drawing_image_path: str, api_key: str = None, original_path: str = None) -> List[Dict[str, Any]]:
     """
-    Execute Deep Vision Pipeline: Extract features geometrically and map via Gemini.
+    Execute Deep Vision Pipeline: Extract features geometrically and classify via Claude Vision.
     """
-    if not api_key or api_key == "your_gemini_api_key_here":
+    if not api_key:
         print("[DrawingParser] No API key, using mock data.")
         return _mock_features()
 
@@ -168,7 +168,7 @@ def parse_drawing(drawing_image_path: str, api_key: str = None, original_path: s
             
             print(f"[DrawingParser] Filtered {len(extracted_texts)} spans down to {len(filtered_texts)} clusters.")
         else:
-            print("[DrawingParser] Not a PDF. Falling back to Gemini full-image OCR.")
+            print("[DrawingParser] Not a PDF. Falling back to Claude Vision full-image OCR.")
             # Fallback will just run the old prompt without grounded text, but we'll adapt below.
             filtered_texts = []
             
@@ -176,6 +176,20 @@ def parse_drawing(drawing_image_path: str, api_key: str = None, original_path: s
         # --- Stage 4: Claude 3.5 Sonnet Reasoning ---
         client = Anthropic(api_key=api_key)
         
+        # Detect image format for API calls
+        _parser_media_type = "image/png"
+        if image_bytes:
+            import io
+            from PIL import Image as PILImage
+            try:
+                pimg = PILImage.open(io.BytesIO(image_bytes))
+                fmt = pimg.format or "PNG"
+                pimg.close()
+                _fmt_map = {"PNG": "image/png", "JPEG": "image/jpeg", "WEBP": "image/webp"}
+                _parser_media_type = _fmt_map.get(fmt, "image/png")
+            except Exception:
+                pass
+
         def _get_vlm_response(prompt_text, image_bytes=None):
             try:
                 content_block = []
@@ -185,7 +199,7 @@ def parse_drawing(drawing_image_path: str, api_key: str = None, original_path: s
                         "type": "image",
                         "source": {
                             "type": "base64",
-                            "media_type": "image/png",
+                            "media_type": _parser_media_type,
                             "data": base64_image
                         }
                     })
@@ -196,7 +210,7 @@ def parse_drawing(drawing_image_path: str, api_key: str = None, original_path: s
                 })
 
                 message = client.messages.create(
-                    model="claude-sonnet-4-5-20250929",
+                    model="claude-sonnet-4-6",
                     max_tokens=4090,
                     system="You are an expert mechanical engineer processing engineering drawings.",
                     messages=[
@@ -232,7 +246,7 @@ def parse_drawing(drawing_image_path: str, api_key: str = None, original_path: s
 {vector_context}
 Look at the provided high-resolution visual image of the drawing to trace the leader lines and verify exactly what each text box is pointing to (e.g. is it pointing to an Outer Dia or a Chamfer?).
 
-Here are all text blocks extracted by PyMuPDF with precise bounding boxes ([ymin, xmin, ymax, xmax]):
+Here are all text blocks extracted by PyMuPDF. Note their exact original `box_2d` coordinates ([ymin, xmin, ymax, xmax]):
 {json.dumps(filtered_texts, indent=2)}
 
 TASK: Select ONLY actual physical manufacturing dimensions/features from this list.
@@ -274,7 +288,7 @@ Return ONLY a valid JSON array (no markdown):
     "specification": "<short clean dimension text>",
     "criticality_hint": "<tight if tolerance ≤ 0.05mm or h-class fit; normal otherwise>",
     "feature_type": "<OD/ID/LENGTH/THREAD/CHAMFER/SURFACE_FINISH/RADIUS/ANGLE>",
-    "box_2d": <the EXACT bbox array from the input data>
+    "box_2d": <the EXACT 'bbox' array copied unmodified from the input data provided above>
   }}
 ]"""
             

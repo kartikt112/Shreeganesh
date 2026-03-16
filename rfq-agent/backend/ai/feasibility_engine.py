@@ -5,6 +5,7 @@ Feasibility Engine:
 - Decides feasibility by comparing tolerance to machine capability
 - Generates deviation suggestions
 - Selects measuring instrument
+- Consumes manufacturing_metadata for enhanced machine assignment decisions
 """
 import re
 from typing import Dict, Any, List, Optional
@@ -16,7 +17,10 @@ def determine_criticality(spec: str, feature_type: str, hint: str) -> str:
         return ""
     spec_lower = spec.lower()
     # GD&T symbols indicate critical
-    if any(s in spec for s in ["⌀", "◎", "⊙", "⊿", "⊕", "Ⓜ", "⊛", "GD&T", "concentricity", "position"]):
+    if any(s in spec for s in ["⌀", "◎", "⊙", "⊿", "⊕", "Ⓜ", "⊛", "GD&T", "concentricity", "position", "⌭", "⌖", "∥", "⊥", "⌒"]):
+        return "SC"
+    # GD&T feature type
+    if feature_type == "GDT":
         return "SC"
     # Surface finish Ra ≤ 1.6 is critical
     ra_match = re.search(r'Ra\s*([\d.]+)', spec, re.IGNORECASE)
@@ -61,6 +65,8 @@ FEATURE_TO_OPERATION = {
     "SLOT": ["SLOT MILLING"],
     "PROFILE": ["PROFILE MILLING"],
     "RADIUS": ["TURNING"],
+    "GDT": ["TURNING"],
+    "REFERENCE": [],
     "NOTE": [],
     "MATERIAL": [],
 }
@@ -89,6 +95,10 @@ def select_instrument(feature_type: str, spec: str, criticality: str, db=None, d
     feat = feature_type or ""
     desc_lower = (description or "").lower()
 
+    # Reference dimensions — no inspection needed
+    if feat == "REFERENCE":
+        return {"instrument": "N/A", "inhouse": "N/A", "frequency": "N/A", "gauge": "N/A"}
+
     # Threading → Thread Ring/Plug Gauge
     if "thread" in feat.lower() or "thread" in spec_lower or "threading" in desc_lower:
         if "internal" in spec_lower or feat == "ID":
@@ -98,6 +108,10 @@ def select_instrument(feature_type: str, spec: str, criticality: str, db=None, d
     # Surface roughness → RA Tester (Outsourced)
     if "ra" in spec_lower or "surface" in feat.lower() or "surface" in desc_lower:
         return {"instrument": "RA Tester", "inhouse": "Out", "frequency": "1/3 Months", "gauge": ""}
+
+    # GD&T → CMM (Outsourced)
+    if feat == "GDT":
+        return {"instrument": "CMM", "inhouse": "Out", "frequency": "5/Setup", "gauge": ""}
 
     # Non-machined features
     if feat in ["NOTE", "MATERIAL", "MASS", "TOLERANCE_STANDARD"]:
@@ -142,15 +156,21 @@ def select_instrument(feature_type: str, spec: str, criticality: str, db=None, d
     return {"instrument": "DVC", "inhouse": "IN", "frequency": "5/Setup", "gauge": ""}
 
 
-def select_machine(feature_type: str, spec: str, db=None) -> Dict[str, str]:
+def select_machine(feature_type: str, spec: str, db=None, manufacturing_metadata: Dict = None) -> Dict[str, str]:
     """
     Returns {machine, inhouse_outsource}
     Matches feature to best machine from the real machine list.
+
+    When manufacturing_metadata is provided, uses:
+    - tightest_tolerance for machine type decision (CNC vs Traub)
+    - part_envelope for machine size selection
+    - material for bar stock and cutting parameters
+    - surface_protection for post-processing requirements
     """
     feat = feature_type or ""
     spec_lower = (spec or "").lower()
 
-    if feat in ["NOTE", "MASS", "TOLERANCE_STANDARD"]:
+    if feat in ["NOTE", "MASS", "TOLERANCE_STANDARD", "REFERENCE"]:
         return {"machine": "N/A", "inhouse": "N/A"}
     if "material" in feat.lower() or "rm" in spec_lower or "tensile" in spec_lower or "yield" in spec_lower:
         return {"machine": "RM SUPPLIER", "inhouse": "Outsource"}
@@ -158,14 +178,35 @@ def select_machine(feature_type: str, spec: str, db=None) -> Dict[str, str]:
         return {"machine": "PLATING", "inhouse": "Outsource"}
     if "thread" in feat.lower() or "thread" in spec_lower:
         if "internal" in spec_lower or feat == "ID":
-            return {"machine": "TAPPING MACHINE", "inhouse": "Outsource"}  # tapping is outsourced
+            return {"machine": "TAPPING MACHINE", "inhouse": "Outsource"}
         return {"machine": "THREAD ROLLING", "inhouse": "Outsource"}
     if "slot" in feat.lower():
         return {"machine": "VMC", "inhouse": "Inhouse"}
     if "profile" in feat.lower():
         return {"machine": "VMC", "inhouse": "Inhouse"}
+    if feat == "GDT":
+        return {"machine": "CNC LATHE", "inhouse": "Inhouse"}
+
     if feat in ["OD", "ID", "LENGTH", "CHAMFER", "SURFACE_FINISH", "RADIUS", "ANGLE"]:
-        # Small OD suggests Traub
+        # Use manufacturing_metadata for enhanced machine selection
+        if manufacturing_metadata:
+            tightest = manufacturing_metadata.get("tightest_tolerance", {})
+            envelope = manufacturing_metadata.get("part_envelope", {})
+            tightest_val = tightest.get("value_mm")
+            max_od = envelope.get("max_od_mm")
+
+            # Machine type decision based on tightest tolerance
+            # < 0.05mm → CNC Lathe; >= 0.05mm → Traub Machine (if envelope fits)
+            if tightest_val is not None and tightest_val >= 0.05:
+                # Check if part fits on Traub (max OD ≤ 25mm for Traub)
+                if max_od is not None and max_od <= 25:
+                    return {"machine": "TRAUB MACHINE", "inhouse": "Inhouse"}
+
+            # If tightest tolerance < 0.05mm, must use CNC Lathe
+            if tightest_val is not None and tightest_val < 0.05:
+                return {"machine": "CNC LATHE", "inhouse": "Inhouse"}
+
+        # Fallback: per-feature diameter check
         dia_match = re.search(r'Ø?\s*([\d.]+)', spec or "")
         if dia_match and feat == "OD":
             try:
@@ -199,8 +240,17 @@ def check_feasibility(feature_type: str, spec: str, machine_name: str) -> Dict[s
         return {"feasible": "No", "reason": reason, "deviation": deviation}
 
 
-def process_features(raw_features: List[Dict], db=None) -> List[Dict]:
-    """Run the full feasibility pipeline on extracted AI features."""
+def process_features(raw_features: List[Dict], db=None, manufacturing_metadata: Dict = None) -> List[Dict]:
+    """
+    Run the full feasibility pipeline on extracted AI features.
+
+    Args:
+        raw_features: list of feature dicts from drawing_parser or vision_extractor
+        db: database session (optional)
+        manufacturing_metadata: metadata dict from vision_extractor (optional)
+            Contains tightest_tolerance, part_envelope, material, surface_protection
+            used for enhanced machine assignment decisions.
+    """
     processed = []
     for f in raw_features:
         feat_type = f.get("feature_type", "")
@@ -208,7 +258,7 @@ def process_features(raw_features: List[Dict], db=None) -> List[Dict]:
         hint = f.get("criticality_hint", "normal")
 
         criticality = determine_criticality(spec, feat_type, hint)
-        machine_info = select_machine(feat_type, spec, db)
+        machine_info = select_machine(feat_type, spec, db, manufacturing_metadata=manufacturing_metadata)
         feasibility = check_feasibility(feat_type, spec, machine_info["machine"])
         description = f.get("description", "")
         instr_info = select_instrument(feat_type, spec, criticality, db, description=description)
