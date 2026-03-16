@@ -22,40 +22,44 @@ def render_balloons(image_path: str, features: List[Dict[str, Any]], output_path
         font = ImageFont.load_default()
 
     import math
+    diag = math.sqrt(w**2 + h**2)
+    max_leader_len = diag * 0.35  # Suppress lines longer than 35% of image diagonal
+
     for feat in features:
         pos = feat.get("balloon_position")
         if not pos:
             continue
-            
+
         cx, cy = pos
+        # Clamp to image bounds
         radius = feat.get("balloon_radius", 20)
+        cx = max(radius, min(w - radius, cx))
+        cy = max(radius, min(h - radius, cy))
         num = feat.get("balloon_no", 0)
-        
+
         start = feat.get("leader_start")
         end = feat.get("leader_end")
-        
-        # Leader line
+
+        # Leader line — only draw if not too long
         if start and end:
-            # Recompute the leader end to touch the edge of the circle
-            dx, dy = end[0] - cx, end[1] - cy
-            dist = max(1, math.sqrt(dx**2 + dy**2))
-            
-            # Simple dog-leg bend
             sx, sy = start
-            bend = None
-            if abs(sx - cx) > 40 and abs(sy - cy) > 40:
-                # If offset horizontally more than vertically
-                if abs(sx - cx) > abs(sy - cy):
-                    bend = [sx, cy]  # Straight down then over
+            leader_len = math.sqrt((sx - cx)**2 + (sy - cy)**2)
+
+            if leader_len < max_leader_len and leader_len > radius * 1.5:
+                # Simple dog-leg bend
+                bend = None
+                if abs(sx - cx) > 40 and abs(sy - cy) > 40:
+                    if abs(sx - cx) > abs(sy - cy):
+                        bend = [sx, cy]
+                    else:
+                        bend = [cx, sy]
+
+                if bend:
+                    draw.line([(sx, sy), tuple(bend), (cx, cy)], fill=DARK_BLUE, width=2)
                 else:
-                    bend = [cx, sy]  # Straight over then down
-                    
-            if bend:
-                draw.line([(sx, sy), tuple(bend), (cx, cy)], fill=DARK_BLUE, width=2)
-            else:
-                draw.line([(sx, sy), (cx, cy)], fill=DARK_BLUE, width=2)
-                
-            draw.ellipse([sx-3, sy-3, sx+3, sy+3], fill=DARK_BLUE)
+                    draw.line([(sx, sy), (cx, cy)], fill=DARK_BLUE, width=2)
+
+                draw.ellipse([sx-3, sy-3, sx+3, sy+3], fill=DARK_BLUE)
             
         # Circle
         draw.ellipse([cx - radius, cy - radius, cx + radius, cy + radius],

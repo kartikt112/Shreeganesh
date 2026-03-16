@@ -816,18 +816,31 @@ def run_pipeline(rfq_id: int, interactive: bool = False):
 
             # Write balloon positions back into features
             pos_map = {b["balloon_no"]: b for b in balloons}
-            default_radius = _compute_radius(*_get_image_size(png_path))
+            img_w, img_h = _get_image_size(png_path)
+            default_radius = _compute_radius(img_w, img_h)
             for feat in raw_features:
                 bno = feat.get("balloon_no")
                 if bno in pos_map:
                     b = pos_map[bno]
-                    feat["balloon_position"] = [
-                        int(b["center"][0]),
-                        int(b["center"][1]),
-                    ]
-                    feat["balloon_radius"] = int(
-                        b.get("radius", default_radius)
-                    )
+                    r = int(b.get("radius", default_radius))
+                    # Clamp balloon center within image bounds
+                    bx = max(r, min(img_w - r, int(b["center"][0])))
+                    by = max(r, min(img_h - r, int(b["center"][1])))
+                    feat["balloon_position"] = [bx, by]
+                    feat["balloon_radius"] = r
+                    # Set leader line from anchor to balloon edge
+                    anchor = feat.get("anchor", feat.get("box_2d_anchor"))
+                    if anchor and len(anchor) == 2:
+                        feat["leader_start"] = [int(anchor[0]), int(anchor[1])]
+                        feat["leader_end"] = [bx, by]
+                    else:
+                        # Fallback: compute anchor from bounding box center
+                        box = feat.get("box_2d")
+                        if box and len(box) == 4:
+                            ax = int((box[1] + box[3]) / 2)
+                            ay = int((box[0] + box[2]) / 2)
+                            feat["leader_start"] = [ax, ay]
+                            feat["leader_end"] = [bx, by]
 
             # Copy final rendered image to the RFQ's ballooned path
             if temp_final and os.path.exists(temp_final):
