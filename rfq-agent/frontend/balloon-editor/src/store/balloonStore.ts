@@ -60,17 +60,9 @@ const featureToBalloon = (
   imgH: number
 ): BalloonState => {
   const box = f.box_2d;
-  let anchorX = 100;
-  let anchorY = 100;
-
-  if (box && box.length === 4) {
-    const [ymin, xmin, ymax, xmax] = box;
-    anchorX = (xmin + xmax) / 2;
-    anchorY = (ymin + ymax) / 2;
-  }
+  const ed = f as Record<string, unknown>;
 
   // If editor layout was saved, restore exact positions
-  const ed = f as Record<string, unknown>;
   if (typeof ed._editor_x === "number") {
     return {
       id: `balloon-${f.balloon_no}-${Date.now()}`,
@@ -84,18 +76,48 @@ const featureToBalloon = (
     };
   }
 
-  // Readable balloon radius (matches backend)
-  const radius = Math.min(30, Math.max(18, Math.min(imgW, imgH) / 100));
+  // All coordinates from the backend (box_2d, balloon_position) are
+  // already in pixel space — no scaling needed.
 
-  // If backend computed balloon_position, use it
-  const bp = (f as Record<string, unknown>).balloon_position as number[] | undefined;
+  // Good default radius for the image size
+  const defaultRadius = Math.min(30, Math.max(16, Math.min(imgW, imgH) / 60));
+
+  // Compute anchor from box_2d [ymin, xmin, ymax, xmax] in pixel coords
+  let anchorX = imgW * 0.1;
+  let anchorY = imgH * 0.1;
+  let boxCenterX = anchorX;
+  let boxCenterY = anchorY;
+
+  if (box && box.length === 4) {
+    const [ymin, xmin, ymax, xmax] = box;
+    boxCenterX = (xmin + xmax) / 2;
+    boxCenterY = (ymin + ymax) / 2;
+    anchorX = boxCenterX;
+    anchorY = boxCenterY;
+  }
+
+  // If backend computed balloon_position, use it directly (already pixel space)
+  const bp = ed.balloon_position as number[] | undefined;
   if (bp && bp.length === 2) {
-    const br = ((f as Record<string, unknown>).balloon_radius as number) || radius;
+    const bx = bp[0];
+    const by = bp[1];
+    // Backend radius may be too small (formula quirk), use sensible default
+    const rawRadius = (ed.balloon_radius as number) || 0;
+    const br = rawRadius >= 14 ? rawRadius : defaultRadius;
+
+    // Compute anchor as the nearest point on box_2d edge to balloon
+    // This makes leader lines shorter and more natural
+    if (box && box.length === 4) {
+      const [ymin, xmin, ymax, xmax] = box;
+      anchorX = Math.max(xmin, Math.min(xmax, bx));
+      anchorY = Math.max(ymin, Math.min(ymax, by));
+    }
+
     return {
       id: `balloon-${f.balloon_no}-${Date.now()}`,
       feature: { ...f },
-      x: bp[0],
-      y: bp[1],
+      x: bx,
+      y: by,
       anchorX,
       anchorY,
       selected: false,
@@ -104,9 +126,9 @@ const featureToBalloon = (
   }
 
   // Fallback: place balloon to the left of anchor
-  let balloonX = anchorX - radius - 25;
-  if (balloonX - radius < 0) {
-    balloonX = anchorX + radius + 25;
+  let balloonX = anchorX - defaultRadius - 25;
+  if (balloonX - defaultRadius < 0) {
+    balloonX = anchorX + defaultRadius + 25;
   }
 
   return {
@@ -117,7 +139,7 @@ const featureToBalloon = (
     anchorX,
     anchorY,
     selected: false,
-    radius,
+    radius: defaultRadius,
   };
 };
 

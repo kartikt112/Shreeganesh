@@ -29,6 +29,11 @@ export interface Feature {
   view_name?: string;
   bounding_box_pct?: number[] | null;
   box_2d?: number[] | null;
+  anchor_point?: number[] | null;
+  balloon_position?: number[] | null;
+  balloon_radius?: number | null;
+  leader_start?: number[] | null;
+  leader_end?: number[] | null;
   confidence?: number;
   source?: "auto" | "manual";
   edited?: boolean;
