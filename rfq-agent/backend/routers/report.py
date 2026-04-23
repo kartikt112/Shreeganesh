@@ -64,6 +64,34 @@ def _get_rfq_and_features(rfq_id: int, db: Session):
             "remarks": f.remarks or "",
         })
 
+    # If any features are missing feasibility data (machine, instrument),
+    # re-run the feasibility engine to populate them
+    needs_engine = any(
+        not fd["proposed_machine"] or not fd["measuring_instrument"]
+        for fd in feat_dicts
+        if fd["feature_type"] not in ("NOTE", "REFERENCE", "TOLERANCE_STANDARD", "MASS", "")
+    )
+    if needs_engine and feat_dicts:
+        import json
+        # Load manufacturing metadata if available
+        upload_dir = os.path.join(_BACKEND_DIR, "uploads")
+        meta_path = os.path.join(upload_dir, "drawings", f"{rfq_id}_metadata.json")
+        manufacturing_metadata = None
+        if os.path.exists(meta_path):
+            with open(meta_path) as mf:
+                manufacturing_metadata = json.load(mf)
+
+        from feasibility_engine import process_features
+        enriched = process_features(feat_dicts, manufacturing_metadata=manufacturing_metadata)
+        # Merge engine output back — only fill empty fields
+        for fd, eng in zip(feat_dicts, enriched):
+            for key in ("criticality", "proposed_machine", "inhouse_outsource",
+                        "feasible", "reason_not_feasible", "deviation_required",
+                        "measuring_instrument", "inspection_inhouse",
+                        "inspection_frequency", "gauge_required"):
+                if not fd.get(key):
+                    fd[key] = eng.get(key, "")
+
     return rfq, rfq_data, feat_dicts
 
 

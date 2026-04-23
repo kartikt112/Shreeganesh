@@ -210,7 +210,7 @@ def parse_drawing(drawing_image_path: str, api_key: str = None, original_path: s
                 })
 
                 message = client.messages.create(
-                    model="claude-sonnet-4-6",
+                    model="claude-opus-4-6",
                     max_tokens=4090,
                     system="You are an expert mechanical engineer processing engineering drawings.",
                     messages=[
@@ -380,10 +380,14 @@ Return ONLY this JSON array format (no markdown):
 
     except Exception as e:
         import traceback
-        with open("/tmp/parser_error.log", "w") as f:
-            f.write(traceback.format_exc())
-            
-        print(f"[DrawingParser] Error: {e} — falling back to mock. Check /tmp/parser_error.log")
+        import tempfile
+        log_path = os.path.join(tempfile.gettempdir(), "parser_error.log")
+        try:
+            with open(log_path, "w") as f:
+                f.write(traceback.format_exc())
+        except OSError:
+            pass
+        print(f"[DrawingParser] Error: {e} — falling back to mock. Check {log_path}")
         return _mock_features()
 
 

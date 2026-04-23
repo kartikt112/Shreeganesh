@@ -51,8 +51,8 @@ def extract_from_image(
     client = Anthropic(api_key=api_key)
 
     message = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=8192,
+        model="claude-opus-4-6",
+        max_tokens=16384,
         system="You are a Senior Metrology Engineer with decades of experience reading engineering drawings, GD&T symbols, and CNC manufacturing specifications. You perform complete manufacturing feasibility assessments.",
         messages=[
             {
@@ -74,6 +74,9 @@ def extract_from_image(
             }
         ],
     )
+
+    if message.stop_reason == "max_tokens":
+        print(f"[VisionExtractor] WARNING: Response was truncated (hit max_tokens). JSON may be incomplete.")
 
     response_text = message.content[0].text.strip()
 
@@ -158,8 +161,74 @@ def _parse_extraction_response(text: str) -> Dict[str, Any]:
         except json.JSONDecodeError:
             pass
 
+    # Last resort: repair truncated JSON
+    # If the response was cut off mid-stream, try to salvage complete features
+    repaired = _repair_truncated_json(text)
+    if repaired:
+        return repaired
+
     print(f"[VisionExtractor] Failed to parse response. First 200 chars: {text[:200]}")
     return {"features": [], "manufacturing_metadata": _empty_metadata()}
+
+
+def _repair_truncated_json(text: str) -> Optional[Dict[str, Any]]:
+    """
+    Attempt to repair truncated JSON by finding the last complete feature object
+    in the features array and closing the JSON properly.
+    """
+    # Find the start of the features array
+    feat_start = text.find('"features"')
+    if feat_start == -1:
+        return None
+
+    arr_start = text.find('[', feat_start)
+    if arr_start == -1:
+        return None
+
+    # Find all complete feature objects by tracking matching braces
+    last_complete_end = -1
+    depth = 0
+    i = arr_start + 1
+    while i < len(text):
+        ch = text[i]
+        if ch == '{':
+            if depth == 0:
+                obj_start = i
+            depth += 1
+        elif ch == '}':
+            depth -= 1
+            if depth == 0:
+                last_complete_end = i
+        elif ch == '"':
+            # Skip string contents (handle escaped quotes)
+            i += 1
+            while i < len(text) and text[i] != '"':
+                if text[i] == '\\':
+                    i += 1  # skip escaped char
+                i += 1
+        i += 1
+
+    if last_complete_end == -1:
+        return None
+
+    # Build a valid JSON with all complete features
+    truncated_features = text[arr_start:last_complete_end + 1] + ']'
+    try:
+        features = json.loads(truncated_features)
+        print(f"[VisionExtractor] Repaired truncated JSON — recovered {len(features)} features")
+
+        # Try to also recover manufacturing_metadata if present before truncation
+        metadata = _empty_metadata()
+        meta_match = re.search(r'"manufacturing_metadata"\s*:\s*(\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\})', text)
+        if meta_match:
+            try:
+                metadata = json.loads(meta_match.group(1))
+            except json.JSONDecodeError:
+                pass
+
+        return {"features": features, "manufacturing_metadata": metadata}
+    except json.JSONDecodeError:
+        return None
 
 
 def _empty_metadata() -> Dict[str, Any]:

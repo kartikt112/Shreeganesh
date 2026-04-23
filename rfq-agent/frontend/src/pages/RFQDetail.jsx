@@ -10,7 +10,7 @@ import {
     AlertTriangle,
     CheckCircle2,
 } from 'lucide-react';
-import api from '../api/client';
+import api, { backendUrl } from '../api/client';
 import BallooningReview from '../components/BallooningReview';
 import FeasibilityReview from '../components/FeasibilityReview';
 import { duration } from '../utils/formatters';
@@ -246,7 +246,7 @@ export default function RFQDetail() {
                     <FileSpreadsheet className="mx-auto text-accent-green mb-4" size={48} />
                     <h2 className="mb-2">Feasibility Report Generated</h2>
                     <p className="text-secondary mb-8">The AI engine and Dev Head review are complete. Download the official Excel report for costing.</p>
-                    <a href={`http://localhost:8000/api/rfq/${rfq.id}/report`} target="_blank" rel="noreferrer" className="btn btn-primary" style={{ display: 'inline-flex', padding: '12px 24px' }}>
+                    <a href={backendUrl(`/api/rfq/${rfq.id}/report`)} target="_blank" rel="noreferrer" className="btn btn-primary" style={{ display: 'inline-flex', padding: '12px 24px' }}>
                         <Download size={20} /> Download Feasibility Report (.xlsx)
                     </a>
                 </div>

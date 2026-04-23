@@ -79,8 +79,11 @@ const featureToBalloon = (
   // All coordinates from the backend (box_2d, balloon_position) are
   // already in pixel space — no scaling needed.
 
-  // Good default radius for the image size
-  const defaultRadius = Math.min(30, Math.max(16, Math.min(imgW, imgH) / 60));
+  // Radius proportional to image — visible at any zoom level
+  const diag = Math.sqrt(imgW * imgW + imgH * imgH);
+  const defaultRadius = Math.min(45, Math.max(20, diag / 120));
+  // Max leader line length — keep balloons close to features
+  const maxLeaderLen = diag * 0.12;
 
   // Compute anchor from box_2d [ymin, xmin, ymax, xmax] in pixel coords
   let anchorX = imgW * 0.1;
@@ -96,50 +99,62 @@ const featureToBalloon = (
     anchorY = boxCenterY;
   }
 
-  // If backend computed balloon_position, use it directly (already pixel space)
+  // Use backend balloon_position if it produces a reasonable leader line
   const bp = ed.balloon_position as number[] | undefined;
-  if (bp && bp.length === 2) {
-    const bx = bp[0];
-    const by = bp[1];
-    // Backend radius may be too small (formula quirk), use sensible default
-    const rawRadius = (ed.balloon_radius as number) || 0;
-    const br = rawRadius >= 14 ? rawRadius : defaultRadius;
+  const rawRadius = (ed.balloon_radius as number) || 0;
+  const br = rawRadius >= 14 ? Math.max(rawRadius, defaultRadius) : defaultRadius;
 
-    // Compute anchor as the nearest point on box_2d edge to balloon
-    // This makes leader lines shorter and more natural
+  if (bp && bp.length === 2) {
+    let bx = bp[0];
+    let by = bp[1];
+
+    // Compute anchor as nearest point on box_2d edge to balloon
     if (box && box.length === 4) {
       const [ymin, xmin, ymax, xmax] = box;
       anchorX = Math.max(xmin, Math.min(xmax, bx));
       anchorY = Math.max(ymin, Math.min(ymax, by));
     }
 
-    return {
-      id: `balloon-${f.balloon_no}-${Date.now()}`,
-      feature: { ...f },
-      x: bx,
-      y: by,
-      anchorX,
-      anchorY,
-      selected: false,
-      radius: br,
-    };
+    const leaderLen = Math.sqrt((bx - anchorX) ** 2 + (by - anchorY) ** 2);
+
+    // If leader line is reasonable, use the backend position
+    if (leaderLen <= maxLeaderLen && leaderLen > 0) {
+      return {
+        id: `balloon-${f.balloon_no}-${Date.now()}`,
+        feature: { ...f },
+        x: bx,
+        y: by,
+        anchorX,
+        anchorY,
+        selected: false,
+        radius: br,
+      };
+    }
+    // Otherwise fall through — reposition balloon close to the anchor
   }
 
-  // Fallback: place balloon to the left of anchor
-  let balloonX = anchorX - defaultRadius - 25;
-  if (balloonX - defaultRadius < 0) {
-    balloonX = anchorX + defaultRadius + 25;
-  }
+  // Place balloon at a short offset from anchor (alternating directions
+  // based on balloon number to reduce overlaps)
+  const offset = br + 20;
+  const bno = f.balloon_no || 1;
+  // Cycle through 8 directions to spread balloons around their anchors
+  const angle = ((bno - 1) % 8) * (Math.PI / 4);
+  let balloonX = anchorX + Math.cos(angle) * offset;
+  let balloonY = anchorY + Math.sin(angle) * offset;
+
+  // Clamp within image bounds
+  balloonX = Math.max(br, Math.min(imgW - br, balloonX));
+  balloonY = Math.max(br, Math.min(imgH - br, balloonY));
 
   return {
     id: `balloon-${f.balloon_no}-${Date.now()}`,
     feature: { ...f },
     x: balloonX,
-    y: anchorY,
+    y: balloonY,
     anchorX,
     anchorY,
     selected: false,
-    radius: defaultRadius,
+    radius: br,
   };
 };
 

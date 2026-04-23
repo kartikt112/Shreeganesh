@@ -102,6 +102,43 @@ class OutsourcedProcess(Base):
     name = Column(String, nullable=False)
 
 
+class MachineRate(Base):
+    """Configurable machine hourly rates for costing."""
+    __tablename__ = "machine_rates"
+    id = Column(Integer, primary_key=True, index=True)
+    machine_name = Column(String, nullable=False, unique=True)
+    rate_per_hour = Column(Float, nullable=False)
+    currency = Column(String, default="INR")
+
+class MaterialPrice(Base):
+    """Configurable material prices and densities for costing."""
+    __tablename__ = "material_prices"
+    id = Column(Integer, primary_key=True, index=True)
+    grade = Column(String, nullable=False, unique=True)     # e.g. "EN8", "C45", "E250"
+    aliases = Column(String, nullable=True)                 # comma-separated aliases e.g. "Fe410,E250(Fe410)"
+    density_g_cm3 = Column(Float, default=7.86)
+    rate_per_kg = Column(Float, nullable=False)
+    currency = Column(String, default="INR")
+
+class CostingConfig(Base):
+    """Configurable overhead percentages and defaults for costing."""
+    __tablename__ = "costing_config"
+    id = Column(Integer, primary_key=True, index=True)
+    key = Column(String, nullable=False, unique=True)
+    value = Column(Float, nullable=False)
+    description = Column(String, nullable=True)
+
+class CostingDraft(Base):
+    """Stores draft costing data for user review/edit before final generation."""
+    __tablename__ = "costing_drafts"
+    id = Column(Integer, primary_key=True, index=True)
+    rfq_id = Column(Integer, ForeignKey("rfqs.id"), nullable=False, index=True)
+    costing_json = Column(Text, nullable=True)  # full costing breakdown as JSON
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    rfq = relationship("RFQ")
+
+
 class PipelineRunStatus(str, enum.Enum):
     SUCCESS = "SUCCESS"
     FAILED = "FAILED"

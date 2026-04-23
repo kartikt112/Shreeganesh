@@ -114,7 +114,7 @@ def gemini_place_balloons(
     from PIL import Image
 
     if not gemini_model:
-        gemini_model = os.getenv("GEMINI_MODEL", "gemini-2.0-flash-preview-image-generation")
+        gemini_model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-image")
 
     orig_img = Image.open(png_path)
     orig_w, orig_h = orig_img.size
@@ -186,7 +186,9 @@ def _call_gemini(
         print("[GeminiBalloon] google-genai not installed, skipping Gemini")
         return None, []
 
-    client = genai.Client(api_key=api_key)
+    import os as _os
+    _use_vertex = _os.getenv("GENAI_USE_VERTEXAI", "").lower() in ("1", "true", "yes")
+    client = genai.Client(vertexai=_use_vertex, api_key=api_key) if _use_vertex else genai.Client(api_key=api_key)
 
     with open(image_path, "rb") as f:
         image_bytes = f.read()

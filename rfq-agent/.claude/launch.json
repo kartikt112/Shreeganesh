@@ -1,0 +1,23 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "backend",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": ["-c", "cd /Users/prakashtupe/Shreeganesh/rfq-agent/backend && source /Users/prakashtupe/Shreeganesh/rfq-agent/backend/venv/bin/activate 2>/dev/null || true && uvicorn main:app --reload --port 8000"],
+      "port": 8000
+    },
+    {
+      "name": "frontend",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": ["-c", "cd /Users/prakashtupe/Shreeganesh/rfq-agent/frontend && npm run dev"],
+      "port": 5173
+    },
+    {
+      "name": "balloon-editor",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": ["-c", "cd /Users/prakashtupe/Shreeganesh/rfq-agent/frontend/balloon-editor && npm run dev -- --port 5174"],
+      "port": 5174
+    }
+  ]
+}

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { CheckCircle, XCircle, Save, Check, AlertTriangle, X } from 'lucide-react';
-import api from '../api/client';
+import api, { backendUrl } from '../api/client';
 
 export default function FeasibilityReview({ rfq, onRefresh }) {
     const [loading, setLoading] = useState(false);
@@ -113,7 +113,7 @@ export default function FeasibilityReview({ rfq, onRefresh }) {
                     <div className="review-image-body">
                         {rfq.ballooned_image_path ? (
                             <img
-                                src={`http://localhost:8000${rfq.ballooned_image_path}`}
+                                src={backendUrl(rfq.ballooned_image_path)}
                                 alt="Ballooned Drawing"
                             />
                         ) : (

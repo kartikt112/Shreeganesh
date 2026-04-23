@@ -1,12 +1,44 @@
-*.pdf
-*.png
-*.jpg
-*.jpeg
-.DS_Store
-node_modules/
+# Secrets — never commit
 .env
+.env.local
+.env.*.local
+
+# Python
 __pycache__/
 *.pyc
 .venv/
 venv/
+
+# Node / Vite / Vercel
+node_modules/
+dist/
+.vite/
+.vercel/
+
+# OS / editor junk
+.DS_Store
+*.swp
+
+# Databases (local only; prod uses Postgres on Railway or SQLite on a Volume)
 rfq_agent.db
+*.db
+*.sqlite
+*.sqlite3
+
+# User uploads + generated artifacts
+# (On Railway, mount a Volume at rfq-agent/backend/uploads to persist.)
+rfq-agent/backend/uploads/drawings/
+rfq-agent/backend/uploads/ballooned/
+rfq-agent/backend/uploads/reports/
+
+# Drawing / document assets
+*.pdf
+*.png
+*.jpg
+*.jpeg
+*.xlsx
+*.xls
+*.numbers
+
+# Extracted data dumps
+numbers_extracted/

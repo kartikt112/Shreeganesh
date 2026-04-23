@@ -30,7 +30,7 @@ def main():
     
     # 2. Parse Drawing
     print("Step 2: Parsing Drawing...")
-    api_key = os.getenv("GEMINI_API_KEY")
+    api_key = os.getenv("ANTHROPIC_API_KEY")
     features = parse_drawing(drawing_image_path=img_path, api_key=api_key, original_path=active_pdf)
     print(f"Extracted {len(features)} features.")
     

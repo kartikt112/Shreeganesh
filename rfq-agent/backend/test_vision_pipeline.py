@@ -116,15 +116,14 @@ for t in clustered_texts:
 print(f"✅ Filtered to {len(filtered_texts)} potential manufacturing dimensions/annotations.")
 
 
-# === 4. Gemini 2.5 Flash: Reasoning Phase ===
-print("\n[Layer 4] Nano Banana (Gemini) Reasoning...")
+# === 4. Claude Vision: Reasoning Phase ===
+print("\n[Layer 4] Claude Vision Reasoning...")
 load_dotenv()
-api_key = os.getenv("GEMINI_API_KEY")
+api_key = os.getenv("ANTHROPIC_API_KEY")
 
-from google import genai
-from google.genai import types
+from anthropic import Anthropic
 
-client = genai.Client(api_key=api_key)
+client = Anthropic(api_key=api_key)
 
 prompt = f"""You are the mechanical reasoning brain of a vision pipeline.
 I have used vector extraction + OpenCV to perfectly locate every piece of text in an engineering drawing.
@@ -146,12 +145,13 @@ Return a JSON array of objects:
 
 Return ONLY the JSON array, nothing else!"""
 
-response = client.models.generate_content(
-    model='gemini-2.5-flash',
-    contents=[prompt]
+response = client.messages.create(
+    model="claude-sonnet-4-6",
+    max_tokens=4096,
+    messages=[{"role": "user", "content": prompt}]
 )
 
-response_text = response.text.strip()
+response_text = response.content[0].text.strip()
 if response_text.startswith("```json"):
     response_text = response_text[7:]
 elif response_text.startswith("```"):

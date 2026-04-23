@@ -1,0 +1,13 @@
+# Railway deployment config for the RFQ frontend (Vite SPA).
+# Set the service's Root Directory to "rfq-agent/frontend" in the Railway UI.
+# Nixpacks auto-detects Node, runs `npm ci` + `npm run build`, then `npm start` (which uses `serve`).
+
+[build]
+builder = "NIXPACKS"
+
+[deploy]
+startCommand = "npm start"
+healthcheckPath = "/"
+healthcheckTimeout = 30
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 5

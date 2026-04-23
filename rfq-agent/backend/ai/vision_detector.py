@@ -25,7 +25,7 @@ def detect_dimensions(image_path: str, api_key: str) -> List[Dict[str, Any]]:
     b64_image = base64.b64encode(image_bytes).decode("utf-8")
     
     message = client.messages.create(
-        model="claude-sonnet-4-6", # Claude 3.5 Sonnet handles vision
+        model="claude-opus-4-6", # Claude 3.5 Sonnet handles vision
         max_tokens=4096,
         messages=[{
             "role": "user",
@@ -72,9 +72,13 @@ def detect_dimensions(image_path: str, api_key: str) -> List[Dict[str, Any]]:
             return data.get("features", [])
     except json.JSONDecodeError as e:
         print(f"[VisionDetector] Failed to parse JSON: {e}")
-        # Save raw to debug
-        with open("/tmp/vision_raw_output.txt", "w") as rf:
-            rf.write(response_text)
-        print(f"[VisionDetector] Saved raw text to /tmp/vision_raw_output.txt")
+        import tempfile, os as _os
+        dbg = _os.path.join(tempfile.gettempdir(), "vision_raw_output.txt")
+        try:
+            with open(dbg, "w") as rf:
+                rf.write(response_text)
+            print(f"[VisionDetector] Saved raw text to {dbg}")
+        except OSError:
+            pass
         return []
 

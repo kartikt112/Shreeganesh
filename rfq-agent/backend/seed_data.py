@@ -8,7 +8,7 @@ import os
 sys.path.insert(0, os.path.dirname(__file__))
 
 from database import SessionLocal, init_db
-from models import Machine, Instrument, OutsourcedProcess
+from models import Machine, Instrument, OutsourcedProcess, MachineRate, MaterialPrice, CostingConfig
 
 MACHINES = [
     # (name, working_limit, parameter, operation_name, achievable_tolerance, measuring_instrument)
@@ -71,8 +71,56 @@ def seed():
                 db.add(OutsourcedProcess(name=op))
             print(f"✅ Seeded {len(OUTSOURCED)} outsourced processes")
 
+        # Costing: Machine rates (Rs/hr)
+        if db.query(MachineRate).count() == 0:
+            rates = [
+                ("Traub", 100), ("CNC", 200), ("CNC Lathe", 200),
+                ("VMC", 250), ("Centerless Grinding", 200),
+                ("Thread Rolling", 150), ("Tapping Machine", 125),
+                ("Lathe", 125), ("Turret Lathe", 250),
+                ("CNC Cutting", 100),
+            ]
+            for name, rate in rates:
+                db.add(MachineRate(machine_name=name, rate_per_hour=rate))
+            print(f"  Seeded {len(rates)} machine rates")
+
+        # Costing: Material prices (Rs/kg)
+        if db.query(MaterialPrice).count() == 0:
+            materials = [
+                # (grade, aliases, density, rate)
+                ("EN8", "C45,EN8/C45,C45/EN8", 7.86, 82),
+                ("E250", "Fe410,E250(Fe410)", 7.86, 86),
+                ("11SMn37", "1.0736,EN 10087", 7.86, 86),
+                ("SS304", "304,AISI 304", 7.93, 250),
+                ("SS316", "316,AISI 316", 7.98, 320),
+                ("EN1A", "11SMn30,1.0715", 7.86, 82),
+                ("Aluminium", "Al,6061,6082", 2.70, 200),
+                ("Brass", "CuZn39Pb3", 8.47, 450),
+            ]
+            for grade, aliases, density, rate in materials:
+                db.add(MaterialPrice(grade=grade, aliases=aliases, density_g_cm3=density, rate_per_kg=rate))
+            print(f"  Seeded {len(materials)} material prices")
+
+        # Costing: Default config percentages
+        if db.query(CostingConfig).count() == 0:
+            configs = [
+                ("rejection_pct", 0.02, "Rejection % of RM+Process"),
+                ("icc_pct", 0.015, "ICC on RM & BOP %"),
+                ("overheads_pct", 0.065, "Overheads % of cost"),
+                ("profit_pct", 0.10, "Profit % of cost"),
+                ("packing_pct", 0.015, "Packing % of cost"),
+                ("freight_per_kg", 8.0, "Freight Rs per Kg"),
+                ("inspection_pct", 0.02, "Inspection & Gauges % of Process cost"),
+                ("yield_pct", 85.0, "Material yield %"),
+                ("zbc_default", 30.0, "Zero base cost default (Rs)"),
+                ("stock_allowance_mm", 1.0, "Stock allowance per side (mm)"),
+            ]
+            for key, value, desc in configs:
+                db.add(CostingConfig(key=key, value=value, description=desc))
+            print(f"  Seeded {len(configs)} costing config entries")
+
         db.commit()
-        print("🌱 Database seeded successfully!")
+        print("Database seeded successfully!")
     except Exception as e:
         db.rollback()
         print(f"❌ Seed error: {e}")

@@ -232,13 +232,9 @@ MANUFACTURING METADATA:
 
 1. EVERY feature MUST appear as a data_row. You have {len(features)} features → you MUST return exactly {len(features)} data_rows. NEVER skip, merge, or truncate features.
 
-2. If the template has fewer empty rows than features (e.g. 14 rows for 17 features), CONTINUE with sequential row numbers beyond the template. The code inserts rows automatically.
+2. If the template has fewer empty rows than features, CONTINUE with sequential row numbers. The code inserts rows automatically.
 
-3. ZERO ABBREVIATIONS — copy values EXACTLY from feature data:
-   - measuring_instrument: use the EXACT string (e.g. "DIGITAL HEIGHT GAUGE" not "DHG", "DIGITAL VERNIER CALIPER" not "DVC", "Micrometer" not "Mic")
-   - inhouse_outsource / inspection_inhouse: write "Inhouse" or "Outsource" in full (NEVER "IN" or "Out" or "I/H")
-   - proposed_machine: use EXACT string from data (e.g. "CNC LATHE" not "CNC")
-   - All other fields: copy verbatim from the feature data, do not paraphrase or shorten
+3. Copy ALL values EXACTLY from the feature data — do not paraphrase, shorten, or abbreviate. The engine already outputs the correct full names.
 
 4. Sr No column: plain integers "1", "2", "3" — never "1.0" or "01"
 
@@ -281,7 +277,7 @@ Return ONLY valid JSON:
         "G": "Yes",
         "H": "",
         "I": "",
-        "J": "DIGITAL HEIGHT GAUGE",
+        "J": "HEIGHT GAUGE",
         "K": "Inhouse",
         "L": "1/Hr",
         "M": "",
@@ -295,7 +291,6 @@ Return ONLY valid JSON:
 
 FINAL CHECK before responding:
 - Count your data_rows. Is it exactly {len(features)}? If not, you missed features — go back and add them.
-- Did you use ANY abbreviations? Search for "DHG", "DVC", "IN", "Out" — replace with full words.
 """
 
     print(f"[FeasibilityAgent] Sending to Claude ({len(features)} features, template: {template_desc[:60]}...)")

@@ -84,7 +84,7 @@ Return the entirely CORRECTED JSON array (no markdown):
 
         client = Anthropic(api_key=api_key)
         message = client.messages.create(
-            model="claude-sonnet-4-6",
+            model="claude-opus-4-6",
             max_tokens=4090,
             system="You are the world's best Mechanical Engineer and Lead Quality Inspector.",
             messages=[

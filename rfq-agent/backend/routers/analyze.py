@@ -41,7 +41,7 @@ router = APIRouter(prefix="/api/rfq", tags=["analyze"])
 MAX_BALLOON_RETRIES = 3
 DARK_BLUE = (31, 78, 121)
 LIGHT_BLUE = (230, 240, 250)
-GEMINI_MODEL = "gemini-3.1-flash-image-preview"
+GEMINI_MODEL = "gemini-2.5-pro"
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -69,7 +69,9 @@ def _get_image_size(path: str) -> Tuple[int, int]:
 
 
 def _compute_radius(img_w: int, img_h: int) -> int:
-    return max(18, min(35, min(img_w, img_h) // 80))
+    # Scale radius with image size — visible at any resolution
+    diag = (img_w ** 2 + img_h ** 2) ** 0.5
+    return max(25, min(55, int(diag / 100)))
 
 
 def _save_feature_to_db(db, rfq_id: int, feat: dict):
@@ -135,34 +137,141 @@ def _parse_gemini_coords(text: str) -> List[Dict[str, Any]]:
     return []
 
 
-def _detect_circles_cv(image_path: str) -> List[Dict]:
-    """Detect circles using OpenCV HoughCircles."""
+def _extract_balloons_from_gemini_image(
+    gemini_image_path: str,
+    json_coords: List[Dict[str, Any]],
+    expected_balloons: List[int],
+    resized_input_size: Tuple[int, int] = (2048, 1448),
+) -> List[Dict[str, Any]]:
+    """
+    Extract balloon positions directly from the Gemini-generated image using
+    OpenCV circle detection, then match to balloon numbers using the JSON
+    coordinates as hints (nearest-neighbor in Gemini image space).
+
+    This gives us the EXACT visual positions from Gemini's image while using
+    JSON coords only for number assignment.
+
+    Returns: [{"balloon_no": N, "x": px, "y": py, "radius": r}, ...]
+    All coordinates are in the Gemini output image space.
+    """
     import cv2
     import numpy as np
 
-    img = cv2.imread(image_path)
+    img = cv2.imread(gemini_image_path)
     if img is None:
+        print("[CV-Extract] Failed to load Gemini image")
         return []
 
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     h, w = gray.shape
-    min_radius = max(10, min(w, h) // 120)
-    max_radius = max(30, min(w, h) // 30)
-    blurred = cv2.GaussianBlur(gray, (9, 9), 2)
+    print(f"[CV-Extract] Gemini image: {w}x{h}, expecting {len(expected_balloons)} balloons")
 
-    circles = cv2.HoughCircles(
-        blurred, cv2.HOUGH_GRADIENT,
-        dp=1.2, minDist=min_radius * 2,
-        param1=80, param2=40,
-        minRadius=min_radius, maxRadius=max_radius,
-    )
+    # --- Step 1: Detect circles ---
+    all_circles = []
+    min_r = max(7, min(w, h) // 110)
+    max_r = max(22, min(w, h) // 30)
 
-    results = []
-    if circles is not None:
-        circles = np.uint16(np.around(circles))
-        for cx, cy, r in circles[0, :]:
-            results.append({"center": [int(cx), int(cy)], "radius": int(r)})
-    return results
+    for dp, p1, p2 in [(1.2, 100, 35), (1.0, 80, 30), (1.5, 120, 40),
+                        (1.0, 60, 25), (1.3, 90, 32), (1.0, 50, 20)]:
+        blurred = cv2.GaussianBlur(gray, (9, 9), 2)
+        circles = cv2.HoughCircles(
+            blurred, cv2.HOUGH_GRADIENT,
+            dp=dp, minDist=min_r * 1.5,
+            param1=p1, param2=p2,
+            minRadius=min_r, maxRadius=max_r,
+        )
+        if circles is not None:
+            for cx, cy, r in np.uint16(np.around(circles))[0]:
+                dup = False
+                for ec in all_circles:
+                    if math.sqrt((ec[0] - cx)**2 + (ec[1] - cy)**2) < min_r * 1.2:
+                        dup = True
+                        break
+                if not dup:
+                    all_circles.append((int(cx), int(cy), int(r)))
+
+    print(f"[CV-Extract] Detected {len(all_circles)} circles (r={min_r}-{max_r})")
+
+    if not all_circles or not json_coords:
+        print("[CV-Extract] No circles or no JSON coords, falling back to JSON")
+        return []
+
+    # --- Step 2: Normalize JSON coords to Gemini output image space ---
+    # JSON coords may be in input space (2048xN) or output space (WxH)
+    # Detect and normalize to output space
+    max_jx = max(jc["x"] for jc in json_coords) if json_coords else 0
+    max_jy = max(jc["y"] for jc in json_coords) if json_coords else 0
+
+    inp_w, inp_h = resized_input_size
+    if max_jx > w * 1.05 or max_jy > h * 1.05:
+        # JSON is in resized input space, scale down to Gemini output space
+        jscale_x = w / inp_w
+        jscale_y = h / inp_h
+        print(f"[CV-Extract] JSON in input space ({inp_w}x{inp_h}), scaling to output ({w}x{h}): {jscale_x:.3f}x, {jscale_y:.3f}x")
+    else:
+        jscale_x = 1.0
+        jscale_y = 1.0
+
+    json_pts = []
+    for jc in json_coords:
+        json_pts.append({
+            "balloon_no": jc["balloon_no"],
+            "x": jc["x"] * jscale_x,
+            "y": jc["y"] * jscale_y,
+        })
+
+    # --- Step 3: Match CV circles to JSON coords (nearest neighbor) ---
+    # For each JSON balloon, find the closest CV circle
+    used_circles = set()
+    matched = []
+
+    # Sort json_pts by balloon_no for deterministic matching
+    json_pts.sort(key=lambda j: j["balloon_no"])
+
+    for jp in json_pts:
+        jx, jy = jp["x"], jp["y"]
+        best_dist = float("inf")
+        best_idx = -1
+
+        for i, (cx, cy, r) in enumerate(all_circles):
+            if i in used_circles:
+                continue
+            dist = math.sqrt((cx - jx)**2 + (cy - jy)**2)
+            if dist < best_dist:
+                best_dist = dist
+                best_idx = i
+
+        # Accept match if within reasonable distance (half the image diagonal)
+        max_match_dist = math.sqrt(w**2 + h**2) * 0.15
+        if best_idx >= 0 and best_dist < max_match_dist:
+            cx, cy, r = all_circles[best_idx]
+            used_circles.add(best_idx)
+            matched.append({
+                "balloon_no": jp["balloon_no"],
+                "x": cx,
+                "y": cy,
+                "radius": r,
+                "match_dist": round(best_dist, 1),
+            })
+        else:
+            # No close CV circle found — use JSON position directly
+            matched.append({
+                "balloon_no": jp["balloon_no"],
+                "x": round(jx),
+                "y": round(jy),
+                "radius": (min_r + max_r) // 2,
+                "match_dist": -1,  # fallback marker
+            })
+
+    cv_matched = sum(1 for m in matched if m["match_dist"] >= 0)
+    json_fallback = sum(1 for m in matched if m["match_dist"] < 0)
+    print(f"[CV-Extract] Matched: {cv_matched} from CV, {json_fallback} from JSON fallback")
+
+    # Clean up match_dist from output
+    for m in matched:
+        m.pop("match_dist", None)
+
+    return matched
 
 
 def _gemini_balloon_image(
@@ -171,27 +280,34 @@ def _gemini_balloon_image(
     gemini_api_key: str,
     output_dir: str,
 ) -> Tuple[Optional[str], List[Dict[str, Any]]]:
-    """
-    Send drawing + feature JSON to Gemini.
-    Returns: (generated_image_path, balloon_coordinates)
+    """Ask Gemini for balloon coordinates as JSON (vision-in, text-out).
+
+    Returns (resized_input_path, coords) — the returned path is just the resized
+    input image so the existing retry/verify scaffolding still works. Actual
+    circle rendering happens locally in _draw_balloons — no image-generation
+    endpoint required, so API-key auth on Vertex works.
     """
     from google import genai
     from google.genai import types
 
     gemini_model = os.getenv("GEMINI_MODEL", GEMINI_MODEL)
-    client = genai.Client(api_key=gemini_api_key)
+    _use_vertex = os.getenv("GENAI_USE_VERTEXAI", "").lower() in ("1", "true", "yes")
+    client = (
+        genai.Client(vertexai=True, api_key=gemini_api_key)
+        if _use_vertex
+        else genai.Client(api_key=gemini_api_key)
+    )
 
-    resized_path, _ = _resize_for_gemini(image_path, output_dir)
+    resized_path, resized_size = _resize_for_gemini(image_path, output_dir)
+    input_w, input_h = resized_size
 
     with open(resized_path, "rb") as f:
         image_bytes = f.read()
 
-    # Build JSON payload from features
     balloon_json = []
     for feat in features:
         pct = feat.get("bounding_box_pct", [0, 0, 0, 0])
         if not pct or pct == [0, 0, 0, 0]:
-            # Derive from box_2d if available
             box = feat.get("box_2d")
             if box and len(box) == 4:
                 iw, ih = _get_image_size(image_path)
@@ -203,7 +319,7 @@ def _gemini_balloon_image(
                 ]
         balloon_json.append({
             "balloon_no": feat["balloon_no"],
-            "specification": feat.get("specification", ""),
+            "specification": feat.get("specification", "") or feat.get("spec", ""),
             "description": feat.get("description", ""),
             "region": pct,
         })
@@ -212,40 +328,32 @@ def _gemini_balloon_image(
     n = len(features)
     nums = ", ".join(str(f["balloon_no"]) for f in features)
 
-    prompt = f"""You are an expert mechanical engineering drawing annotator.
+    prompt = f"""You are a senior mechanical metrology engineer placing inspection balloons on an engineering drawing.
 
-I need you to place inspection balloons on this engineering drawing. Below is a JSON array of EXACTLY {n} features. Each has a balloon_no and a region hint [ymin, xmin, ymax, xmax] on a 0-1000 grid.
+The input image is {input_w}x{input_h} pixels. Below is a JSON list of EXACTLY {n} features. Each has a `balloon_no` and a `region` hint ([ymin, xmin, ymax, xmax] on a 0-1000 grid) pointing to where the dimension text sits on the drawing.
 
 ```json
 {json_str}
 ```
 
-YOUR TWO TASKS:
-
-TASK 1 — OUTPUT JSON FIRST:
-Before generating the image, output a JSON array listing where you will place each balloon.
-Format: [{{"balloon_no": 1, "x": <pixel_x>, "y": <pixel_y>}}, ...]
-The x, y must be the CENTER of each balloon circle in the OUTPUT image pixel coordinates.
-
-TASK 2 — GENERATE THE IMAGE:
-Then generate the modified drawing with all {n} numbered balloons placed.
+YOUR TASK: return the optimal pixel (x, y) center for each balloon.
 
 RULES:
-1. Place EXACTLY {n} balloons — one for EACH entry in the JSON
-2. Each balloon MUST show its exact balloon_no number inside the circle
-3. Place each balloon in nearby whitespace close to its dimension text
-4. Use the "region" hint to locate where each dimension appears
-5. Balloons must NOT overlap with each other or drawing geometry
-6. Keep the original drawing completely intact — only ADD balloons
-7. Standard balloon style: small circle with number centered inside
-8. DO NOT skip any balloon — ALL {n} must appear
+1. Place EXACTLY {n} balloons — one per entry in the JSON, preserving balloon_no.
+2. Each balloon center must sit in CLEAR WHITESPACE — never on dimension text, drawing geometry, leader lines, hatching, GD&T frames, or the title block.
+3. Balloons must be NEAR their feature — ideally within 200–500 px of the region centroid, on the side that has the most free space.
+4. Balloons must NOT overlap each other — minimum 60 px between any two centers.
+5. Avoid the title block (bottom-right quadrant) and the notes region (bottom-left, below ~65% height).
+6. Prefer margins between views, edges of the part, and gaps in the drawing.
+7. Use pixel coordinates in the INPUT image space ({input_w}x{input_h}). The top-left is (0, 0).
 
-COUNT CHECK: Output must contain balloons: {nums}
+OUTPUT: return ONLY a JSON array, no prose, no markdown fences:
+[{{"balloon_no": 1, "x": <int>, "y": <int>}}, ...]
 
-First output the JSON coordinates, then generate the image."""
+COUNT CHECK: {n} entries covering balloon_no: {nums}"""
 
     try:
-        print(f"[Pipeline] Sending to Gemini model={gemini_model}, {n} features, image={len(image_bytes)} bytes")
+        print(f"[Pipeline] Gemini coord request: model={gemini_model}, {n} features, vertex={_use_vertex}")
         response = client.models.generate_content(
             model=gemini_model,
             contents=[
@@ -253,32 +361,40 @@ First output the JSON coordinates, then generate the image."""
                 prompt,
             ],
             config=types.GenerateContentConfig(
-                response_modalities=["TEXT", "IMAGE"]
+                temperature=0.0,
+                max_output_tokens=32768,
+                response_mime_type="application/json",
+                response_schema={
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "balloon_no": {"type": "integer"},
+                            "x": {"type": "integer"},
+                            "y": {"type": "integer"},
+                        },
+                        "required": ["balloon_no", "x", "y"],
+                    },
+                },
             ),
         )
 
-        gemini_output_path = os.path.join(output_dir, "gemini_ballooned.png")
-        gemini_coords = []
-        gemini_text = ""
+        gemini_text = response.text or ""
+        if not gemini_text:
+            for part in response.candidates[0].content.parts:
+                if hasattr(part, "text") and part.text:
+                    gemini_text += part.text
 
-        for part in response.candidates[0].content.parts:
-            if part.inline_data and part.inline_data.mime_type.startswith("image/"):
-                with open(gemini_output_path, "wb") as f:
-                    f.write(part.inline_data.data)
-                print(f"[Pipeline] Gemini image saved: {gemini_output_path}")
+        gemini_coords = _parse_gemini_coords(gemini_text)
+        print(f"[Pipeline] Gemini returned {len(gemini_coords)} balloon coords")
+        if len(gemini_coords) == 0:
+            print(f"[Pipeline] Raw Gemini text (first 800 chars):\n{gemini_text[:800]}")
+            print(f"[Pipeline] Raw Gemini text (last 800 chars):\n{gemini_text[-800:]}")
 
-            if hasattr(part, "text") and part.text:
-                gemini_text += part.text
-                print(f"[Pipeline] Gemini text: {part.text[:300]}")
-
-        if gemini_text:
-            gemini_coords = _parse_gemini_coords(gemini_text)
-
-        if os.path.exists(gemini_output_path):
-            return gemini_output_path, gemini_coords
-
-        print("[Pipeline] WARNING: No image in Gemini response")
-        return None, gemini_coords
+        # Return the resized input path as the "gemini_path" so downstream
+        # _build_balloon_positions sees gemini_output_size == resized_size and
+        # treats coords as input-space (they are).
+        return resized_path, gemini_coords
 
     except Exception as e:
         print(f"[Pipeline] Gemini API error: {e}")
@@ -290,89 +406,86 @@ def _build_balloon_positions(
     gemini_coords: List[Dict[str, Any]],
     gemini_image_path: Optional[str],
     features: List[Dict[str, Any]],
-    gemini_img_size: Tuple[int, int],
+    resized_input_size: Tuple[int, int],
     original_img_size: Tuple[int, int],
+    gemini_output_size: Tuple[int, int] = (1222, 864),
 ) -> List[Dict[str, Any]]:
     """
     Build final balloon positions. Priority:
-    1. Gemini's JSON coordinates (scaled to original resolution)
-    2. CV detection + nearest-neighbor for missing
+    1. CV-extracted positions from Gemini image (exact visual positions)
+    2. Gemini JSON coordinates (fallback for circles CV missed)
     3. bbox center fallback for anything still missing
     """
-    sx = original_img_size[0] / gemini_img_size[0]
-    sy = original_img_size[1] / gemini_img_size[1]
-
     all_nums = {f["balloon_no"] for f in features}
     placed = {}
     default_radius = _compute_radius(*original_img_size)
+    ow, oh = original_img_size
+    margin = default_radius + 2
 
-    # Priority 1: Gemini JSON coords
-    if gemini_coords:
-        print(f"[Pipeline] Using Gemini JSON coords for {len(gemini_coords)} balloons")
+    # Priority 1: CV-extract actual balloon positions from a Gemini-RENDERED image.
+    # Only applies when the model produced its own annotated image — if we're in
+    # coord-only mode, gemini_image_path points at the unmodified resized input,
+    # so we skip CV (otherwise it matches drawing geometry as balloons).
+    _is_rendered_gemini_image = (
+        gemini_image_path
+        and gemini_image_path != ""
+        and gemini_output_size != resized_input_size
+    )
+    if _is_rendered_gemini_image and gemini_coords:
+        cv_balloons = _extract_balloons_from_gemini_image(
+            gemini_image_path, gemini_coords, list(all_nums),
+            resized_input_size=resized_input_size,
+        )
+        if cv_balloons:
+            gw, gh = gemini_output_size
+            sx_cv = ow / gw
+            sy_cv = oh / gh
+            print(f"[Pipeline] CV coords space: {gw}x{gh} -> {ow}x{oh} (scale: {sx_cv:.2f}x, {sy_cv:.2f}x)")
+            for cb in cv_balloons:
+                bno = cb["balloon_no"]
+                if bno in all_nums:
+                    cx = max(margin, min(cb["x"] * sx_cv, ow - margin))
+                    cy = max(margin, min(cb["y"] * sy_cv, oh - margin))
+                    placed[bno] = {
+                        "balloon_no": bno,
+                        "center": [cx, cy],
+                        "radius": default_radius,
+                        "source": "cv_gemini",
+                    }
+            print(f"[Pipeline] CV placed {len(placed)}/{len(all_nums)} balloons")
+
+    # Priority 2: Gemini JSON coordinates for any balloons CV missed
+    missing_after_cv = all_nums - set(placed.keys())
+    if missing_after_cv and gemini_coords:
+        max_x = max(gc["x"] for gc in gemini_coords)
+        max_y = max(gc["y"] for gc in gemini_coords)
+        out_w, out_h = gemini_output_size
+        # If coords exceed output image dims, they're in resized input space
+        if max_x > out_w * 1.05 or max_y > out_h * 1.05:
+            coord_space = resized_input_size
+        else:
+            coord_space = gemini_output_size
+
+        sx = ow / coord_space[0]
+        sy = oh / coord_space[1]
+        print(f"[Pipeline] JSON fallback coords space: {coord_space[0]}x{coord_space[1]} -> {ow}x{oh} (scale: {sx:.2f}x, {sy:.2f}x)")
+
+        json_placed = 0
         for gc in gemini_coords:
             bno = gc["balloon_no"]
-            if bno in all_nums:
+            if bno in missing_after_cv:
+                cx = max(margin, min(gc["x"] * sx, ow - margin))
+                cy = max(margin, min(gc["y"] * sy, oh - margin))
                 placed[bno] = {
                     "balloon_no": bno,
-                    "center": [gc["x"] * sx, gc["y"] * sy],
-                    "radius": default_radius * (max(sx, sy) * 0.25),
+                    "center": [cx, cy],
+                    "radius": default_radius,
                     "source": "gemini_json",
                 }
+                json_placed += 1
 
-    # Priority 2: CV detection for missing
-    missing_after_json = all_nums - set(placed.keys())
-    if missing_after_json and gemini_image_path:
-        print(f"[Pipeline] {len(missing_after_json)} balloons missing from JSON, trying CV...")
-        cv_balloons = _detect_circles_cv(gemini_image_path)
-
-        cv_scaled = [
-            {"center": [b["center"][0] * sx, b["center"][1] * sy], "radius": b["radius"] * max(sx, sy)}
-            for b in cv_balloons
-        ]
-
-        anchors = []
-        for f in features:
-            if f["balloon_no"] not in missing_after_json:
-                continue
-            box = f.get("box_2d")
-            if box and len(box) == 4:
-                anchors.append({
-                    "balloon_no": f["balloon_no"],
-                    "x": (box[1] + box[3]) / 2,
-                    "y": (box[0] + box[2]) / 2,
-                })
-
-        # Filter CV circles near already-placed balloons
-        available_cv = []
-        for cvb in cv_scaled:
-            too_close = any(
-                math.sqrt((cvb["center"][0] - p["center"][0])**2 +
-                           (cvb["center"][1] - p["center"][1])**2) < default_radius * 3
-                for p in placed.values()
-            )
-            if not too_close:
-                available_cv.append(cvb)
-
-        # Greedy nearest-neighbor
-        used = set()
-        for cvb in available_cv:
-            bx, by = cvb["center"]
-            best_dist, best_a = float("inf"), None
-            for a in anchors:
-                if a["balloon_no"] in used:
-                    continue
-                dist = math.sqrt((bx - a["x"])**2 + (by - a["y"])**2)
-                if dist < best_dist:
-                    best_dist, best_a = dist, a
-            if best_a and best_dist < max(original_img_size) * 0.3:
-                placed[best_a["balloon_no"]] = {
-                    "balloon_no": best_a["balloon_no"],
-                    "center": cvb["center"],
-                    "radius": cvb["radius"],
-                    "source": "cv_fallback",
-                }
-                used.add(best_a["balloon_no"])
-                print(f"[Pipeline] CV fallback -> #{best_a['balloon_no']}")
+        if json_placed:
+            print(f"[Pipeline] JSON fallback placed {json_placed} additional balloons")
 
     # Priority 3: bbox center fallback
     still_missing = all_nums - set(placed.keys())
@@ -515,7 +628,7 @@ def _verify_with_claude(
 
     client = Anthropic(api_key=api_key)
     message = client.messages.create(
-        model="claude-sonnet-4-6",
+        model="claude-opus-4-6",
         max_tokens=2048,
         messages=[{
             "role": "user",
@@ -580,6 +693,7 @@ def _run_gemini_balloon_pipeline(
 
     best_balloons = []
     final_path = ""
+    best_score = -1
 
     for attempt in range(1, MAX_BALLOON_RETRIES + 1):
         print(f"\n[Pipeline] ═══ BALLOON ATTEMPT {attempt}/{MAX_BALLOON_RETRIES} ═══")
@@ -593,17 +707,20 @@ def _run_gemini_balloon_pipeline(
         print(f"[Pipeline] Gemini completed ({elapsed:.1f}s)")
 
         if not gemini_path:
-            print("[Pipeline] No image from Gemini, retrying...")
+            print("[Pipeline] No image from Gemini, waiting 10s before retry...")
+            time.sleep(10)
             continue
 
         gemini_img = Image.open(gemini_path)
-        gemini_size = gemini_img.size
+        gemini_output_size = gemini_img.size
         gemini_img.close()
-        print(f"[Pipeline] Gemini output: {gemini_size[0]}x{gemini_size[1]}, JSON coords: {len(gemini_coords)}")
+        print(f"[Pipeline] Gemini output: {gemini_output_size[0]}x{gemini_output_size[1]}, JSON coords: {len(gemini_coords)}")
 
         # ── Build positions ──
+        # Gemini coords may be in either its output image space or the resized input space.
+        # _build_balloon_positions auto-detects which.
         balloons = _build_balloon_positions(
-            gemini_coords, gemini_path, features, gemini_size, orig_size,
+            gemini_coords, gemini_path, features, resized_size, orig_size, gemini_output_size,
         )
         print(f"[Pipeline] Built {len(balloons)} balloon positions")
 
@@ -622,16 +739,15 @@ def _run_gemini_balloon_pipeline(
                 print(f"[Pipeline]   ! {issue}")
 
         # ── Render ──
-        final_path = os.path.join(ballooned_dir, "final_ballooned.png")
-        _draw_balloons(png_path, balloons, final_path)
-
-        best_balloons = balloons
+        attempt_path = os.path.join(ballooned_dir, "final_ballooned.png")
+        _draw_balloons(png_path, balloons, attempt_path)
 
         # ── Verify with Claude ──
         t0 = time.time()
-        verification = _verify_with_claude(final_path, features, api_key)
+        verification = _verify_with_claude(attempt_path, features, api_key)
+        visible = verification.get('total_visible', 0)
         print(f"[Pipeline] Claude verification ({time.time() - t0:.1f}s):")
-        print(f"[Pipeline]   Visible: {verification.get('total_visible', '?')}")
+        print(f"[Pipeline]   Visible: {visible}")
         print(f"[Pipeline]   Missing: {verification.get('missing', [])}")
         print(f"[Pipeline]   All correct: {verification.get('all_correct', False)}")
 
@@ -639,6 +755,15 @@ def _run_gemini_balloon_pipeline(
         verif_path = os.path.join(drawings_dir, f"verification_attempt_{attempt}.json")
         with open(verif_path, "w") as fp:
             json.dump(verification, fp, indent=2)
+
+        # Track best attempt by visible count + fewer out-of-bounds
+        oob_count = len([i for i in validation.get("issues", []) if "out of bounds" in str(i)])
+        attempt_score = visible * 100 - oob_count  # prioritize visible, penalize OOB
+        if attempt_score > best_score:
+            best_balloons = balloons
+            final_path = attempt_path
+            best_score = attempt_score
+            print(f"[Pipeline] New best: {visible} visible, {oob_count} OOB (score={attempt_score})")
 
         # Check if done
         if verification.get("all_correct", False) and validation["placed"] == validation["expected"]:
@@ -648,14 +773,15 @@ def _run_gemini_balloon_pipeline(
         v_missing = verification.get("missing", [])
         v_wrong = verification.get("wrong_placements", [])
 
-        if not v_missing and not v_wrong and validation["placed"] == validation["expected"]:
-            print(f"[Pipeline] Validation passed ({validation['placed']}/{validation['expected']})")
+        # Accept if all balloons visible and no missing — minor description issues are OK
+        if not v_missing and validation["placed"] == validation["expected"]:
+            print(f"[Pipeline] All {visible} visible, no missing. Accepting (minor issues only).")
             break
 
         if attempt < MAX_BALLOON_RETRIES:
             print(f"[Pipeline] Issues found, retrying... missing={v_missing}, wrong={v_wrong}")
         else:
-            print(f"[Pipeline] Max retries reached. Best: {validation['placed']}/{validation['expected']}")
+            print(f"[Pipeline] Max retries reached. Using best attempt.")
 
     return best_balloons, final_path
 
@@ -791,6 +917,45 @@ def run_pipeline(rfq_id: int, interactive: bool = False):
         )
         stage_times["geometry_correction"] = time.time() - t0
 
+        # ── Step 3.5: Filter non-inspection features ────────────────────
+        # Only balloon actual inspectable features — not notes, materials,
+        # tolerance standards, datum labels, position markers, etc.
+        SKIP_TYPES = {"note", "material", "tolerance_standard", "mass"}
+        SKIP_SPEC_PREFIXES = [
+            "DIN ISO 2768", "Datum A", "Datum B", "Datum C",
+            "Scale ", "ACHTUNG", "ATTENTION", "Inspection frequency",
+            "<CD>", "<SC> =",  # <SC> followed by = is a legend, not a feature
+            "EN 10087", "ISO 683", "alternativ:", "Material for India",
+            "Material für India", "Material for india",
+            "For India", "Werkstoff", "Werkstoff /",
+            "Label ",
+        ]
+
+        def _is_inspectable(feat: dict) -> bool:
+            ft = (feat.get("type") or feat.get("feature_type") or "").lower()
+            if ft in SKIP_TYPES:
+                return False
+            spec = (feat.get("spec") or feat.get("specification") or "").strip()
+            desc = feat.get("description") or ""
+            # Skip if spec starts with known non-inspection patterns
+            for skip in SKIP_SPEC_PREFIXES:
+                if spec.startswith(skip) or desc.startswith("Note -"):
+                    return False
+            # Keep reference dims like (Ø9.5) — they still need balloon numbers
+            # Skip bare single/double digit labels (position markers like "1", "3", "04")
+            if spec.isdigit() and len(spec) <= 2 and ft in ("other", "dimension", ""):
+                return False
+            return True
+
+        inspectable = [f for f in correction_results if _is_inspectable(f)]
+        skipped = len(correction_results) - len(inspectable)
+        if skipped > 0:
+            print(f"[Pipeline] Filtered {skipped} non-inspection features ({len(correction_results)} -> {len(inspectable)} for ballooning)")
+
+        # Renumber sequentially for clean balloon numbering
+        for i, feat in enumerate(inspectable, 1):
+            feat["balloon_no"] = i
+
         # ── Step 4: Gemini Balloon Pipeline (with retry + verification) ───
         print(f"[Pipeline] Step 4: Balloon placement")
         t0 = time.time()
@@ -808,17 +973,17 @@ def run_pipeline(rfq_id: int, interactive: bool = False):
             )
             balloons, temp_final = _run_gemini_balloon_pipeline(
                 png_path,
-                raw_features,
+                inspectable,
                 gemini_key,
                 api_key,
                 upload_dir,
             )
 
-            # Write balloon positions back into features
+            # Write balloon positions back into inspectable features
             pos_map = {b["balloon_no"]: b for b in balloons}
             img_w, img_h = _get_image_size(png_path)
             default_radius = _compute_radius(img_w, img_h)
-            for feat in raw_features:
+            for feat in inspectable:
                 bno = feat.get("balloon_no")
                 if bno in pos_map:
                     b = pos_map[bno]
@@ -876,7 +1041,7 @@ def run_pipeline(rfq_id: int, interactive: bool = False):
             upload_dir, "drawings", f"{rfq_id}_features.json"
         )
         with open(features_path, "w") as fp:
-            json.dump(raw_features, fp, indent=2, default=str)
+            json.dump(inspectable, fp, indent=2, default=str)
         stage_times["save_features"] = time.time() - t0
 
         # ── Step 6: Interactive mode → save draft and stop ────────────────
@@ -887,7 +1052,7 @@ def run_pipeline(rfq_id: int, interactive: bool = False):
                 upload_dir, "ballooned", f"{rfq_id}_draft.json"
             )
             draft_output = {
-                "features": raw_features,
+                "features": inspectable,
                 "manufacturing_metadata": manufacturing_metadata or {},
             }
             with open(draft_json_path, "w") as df:
@@ -896,7 +1061,7 @@ def run_pipeline(rfq_id: int, interactive: bool = False):
             db.query(DrawingFeature).filter(
                 DrawingFeature.rfq_id == rfq_id
             ).delete()
-            for feat in raw_features:
+            for feat in inspectable:
                 _save_feature_to_db(db, rfq_id, feat)
             db.commit()
 
@@ -924,7 +1089,7 @@ def run_pipeline(rfq_id: int, interactive: bool = False):
         from feasibility_engine import process_features
 
         processed = process_features(
-            raw_features, db, manufacturing_metadata=manufacturing_metadata
+            inspectable, db, manufacturing_metadata=manufacturing_metadata
         )
 
         db.query(DrawingFeature).filter(
@@ -985,7 +1150,7 @@ async def trigger_analysis(
     rfq = db.query(RFQ).filter(RFQ.id == rfq_id).first()
     if not rfq:
         raise HTTPException(status_code=404, detail="RFQ not found")
-    if rfq.status not in [RFQStatus.NEW, RFQStatus.PARSING]:
+    if rfq.status not in [RFQStatus.NEW, RFQStatus.PARSING, RFQStatus.BALLOONING_REVIEW]:
         raise HTTPException(status_code=400, detail=f"Cannot re-analyze RFQ in status {rfq.status}")
 
     background_tasks.add_task(run_pipeline, rfq_id, interactive)
@@ -1013,6 +1178,21 @@ async def get_extraction_data(
     if os.path.exists(draft_path):
         with open(draft_path, "r") as df:
             data = json.load(df)
+            # Normalize feature keys for frontend compatibility
+            for feat in data.get("features", []):
+                if "spec" in feat and "specification" not in feat:
+                    feat["specification"] = feat.pop("spec")
+                if "type" in feat and "description" not in feat:
+                    feat["description"] = feat.get("type", "")
+                    feat["feature_type"] = feat.pop("type")
+                if "description" not in feat:
+                    feat["description"] = ""
+                if "specification" not in feat:
+                    feat["specification"] = ""
+                # Convert corrected_box [xmin,ymin,xmax,ymax] -> box_2d [ymin,xmin,ymax,xmax]
+                cb = feat.pop("corrected_box", None)
+                if cb and len(cb) == 4 and "box_2d" not in feat:
+                    feat["box_2d"] = [cb[1], cb[0], cb[3], cb[2]]
             data["image_path"] = rfq.drawing_image_path
             data["ballooned_image_path"] = rfq.ballooned_image_path
             return data

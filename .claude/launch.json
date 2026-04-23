@@ -1,0 +1,26 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "backend",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": ["-m", "uvicorn", "main:app", "--reload", "--host", "0.0.0.0", "--port", "8000"],
+      "port": 8000,
+      "cwd": "rfq-agent/backend"
+    },
+    {
+      "name": "frontend",
+      "runtimeExecutable": "/Users/prakashtupe/.nvm/versions/node/v22.22.0/bin/node",
+      "runtimeArgs": ["node_modules/.bin/vite", "--port", "5173"],
+      "port": 5173,
+      "cwd": "rfq-agent/frontend"
+    },
+    {
+      "name": "balloon-editor",
+      "runtimeExecutable": "/Users/prakashtupe/.nvm/versions/node/v22.22.0/bin/node",
+      "runtimeArgs": ["node_modules/.bin/vite", "--port", "5174"],
+      "port": 5174,
+      "cwd": "rfq-agent/frontend/balloon-editor"
+    }
+  ]
+}

@@ -3,7 +3,7 @@ import {
     CheckCircle, XCircle, Trash2, RefreshCw, PenTool,
     ExternalLink, AlertTriangle, X, Send,
 } from 'lucide-react';
-import api from '../api/client';
+import api, { backendUrl, balloonEditorUrl } from '../api/client';
 
 export default function BallooningReview({ rfq, onRefresh }) {
     const [loading, setLoading] = useState(false);
@@ -33,7 +33,7 @@ export default function BallooningReview({ rfq, onRefresh }) {
     // Stable image src — only changes when rfq.ballooned_image_path changes (not on every render)
     const imgSrc = useMemo(() => {
         const path = rfq.ballooned_image_path || rfq.drawing_image_path;
-        return path ? `http://localhost:8000${path}?t=${rfq.id}` : null;
+        return path ? `${backendUrl(path)}?t=${rfq.id}` : null;
     }, [rfq.ballooned_image_path, rfq.drawing_image_path, rfq.id]);
 
     const showToast = (type, msg) => setToast({ type, msg });
@@ -161,15 +161,17 @@ export default function BallooningReview({ rfq, onRefresh }) {
                         AI Extracted Drawing
                         {loading && <RefreshCw size={13} className="spin-icon" />}
                     </h3>
-                    <a
-                        href={`http://localhost:5174?rfq_id=${rfq.id}&api=http://localhost:8000`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="btn btn-primary"
-                        style={{ padding: '6px 14px', textDecoration: 'none' }}
-                    >
-                        <PenTool size={14} /> Open Editor <ExternalLink size={12} />
-                    </a>
+                    {balloonEditorUrl && (
+                        <a
+                            href={`${balloonEditorUrl}?rfq_id=${rfq.id}&api=${encodeURIComponent(backendUrl(''))}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="btn btn-primary"
+                            style={{ padding: '6px 14px', textDecoration: 'none' }}
+                        >
+                            <PenTool size={14} /> Open Editor <ExternalLink size={12} />
+                        </a>
+                    )}
                 </div>
                 <div className="review-image-body">
                     {imgSrc ? (
